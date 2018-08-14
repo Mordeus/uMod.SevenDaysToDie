@@ -2,7 +2,6 @@
 using Oxide.Core.Libraries;
 using Oxide.Core.Libraries.Covalence;
 using Oxide.Core.Plugins;
-using Oxide.Game.SevenDays.Libraries.Covalence;
 using System;
 using System.Collections.Generic;
 
@@ -27,21 +26,13 @@ namespace Oxide.Game.SevenDays
         }
 
         // Libraries
-        //internal readonly Command cmdlib = Interface.Oxide.GetLibrary<Command>();
         internal readonly Lang lang = Interface.Oxide.GetLibrary<Lang>();
         internal readonly Permission permission = Interface.Oxide.GetLibrary<Permission>();
-        //internal readonly Player Player = Interface.Oxide.GetLibrary<Player>();
 
         // Instances
         internal static readonly SevenDaysCovalenceProvider Covalence = SevenDaysCovalenceProvider.Instance;
         internal readonly PluginManager pluginManager = Interface.Oxide.RootPluginManager;
         internal readonly IServer Server = Covalence.CreateServer();
-
-        // Commands that a plugin can't override
-        internal static IEnumerable<string> RestrictedCommands => new[]
-        {
-            ""
-        };
 
         private bool serverInitialized;
 
@@ -74,23 +65,36 @@ namespace Oxide.Game.SevenDays
 
             // Add core misc commands
             AddCovalenceCommand(new[] { "oxide.lang", "o.lang" }, "LangCommand");
+            AddCovalenceCommand(new[] { "oxide.save", "o.save" }, "SaveCommand");
             AddCovalenceCommand(new[] { "oxide.version", "o.version" }, "VersionCommand");
 
             // Register messages for localization
-            foreach (var language in Core.Localization.languages) lang.RegisterMessages(language.Value, this, language.Key);
+            foreach (KeyValuePair<string, Dictionary<string, string>> language in Core.Localization.languages)
+            {
+                lang.RegisterMessages(language.Value, this, language.Key);
+            }
 
             // Setup default permission groups
             if (permission.IsLoaded)
             {
-                var rank = 0;
-                foreach (var defaultGroup in Interface.Oxide.Config.Options.DefaultGroups)
-                    if (!permission.GroupExists(defaultGroup)) permission.CreateGroup(defaultGroup, defaultGroup, rank++);
+                int rank = 0;
+                foreach (string defaultGroup in Interface.Oxide.Config.Options.DefaultGroups)
+                {
+                    if (!permission.GroupExists(defaultGroup))
+                    {
+                        permission.CreateGroup(defaultGroup, defaultGroup, rank++);
+                    }
+                }
 
                 permission.RegisterValidate(s =>
                 {
                     ulong temp;
-                    if (!ulong.TryParse(s, out temp)) return false;
-                    var digits = temp == 0 ? 1 : (int)Math.Floor(Math.Log10(temp) + 1);
+                    if (!ulong.TryParse(s, out temp))
+                    {
+                        return false;
+                    }
+
+                    int digits = temp == 0 ? 1 : (int)Math.Floor(Math.Log10(temp) + 1);
                     return digits >= 17;
                 });
 
@@ -105,8 +109,11 @@ namespace Oxide.Game.SevenDays
         [HookMethod("OnPluginLoaded")]
         private void OnPluginLoaded(Plugin plugin)
         {
-            // Call OnServerInitialized for hotloaded plugins
-            if (serverInitialized) plugin.CallHook("OnServerInitialized");
+            if (serverInitialized)
+            {
+                // Call OnServerInitialized for hotloaded plugins
+                plugin.CallHook("OnServerInitialized");
+            }
         }
 
         /// <summary>
@@ -115,19 +122,42 @@ namespace Oxide.Game.SevenDays
         [HookMethod("OnServerInitialized")]
         private void OnServerInitialized()
         {
-            if (serverInitialized) return;
+            if (!serverInitialized)
+            {
+                Analytics.Collect();
 
-            Analytics.Collect();
-            SevenDaysExtension.ServerConsole();
+                // Show the server console, if enabled
+                SevenDaysExtension.ServerConsole();
 
-            serverInitialized = true;
+                serverInitialized = true;
+            }
+        }
+
+        /// <summary>
+        /// Called when the server is saved
+        /// </summary>
+        [HookMethod("OnServerSave")]
+        private void OnServerSave()
+        {
+            // Trigger save process
+            Interface.Oxide.OnSave();
+
+            // Save Oxide groups, users, and other data
+            Covalence.PlayerManager.SavePlayerData();
         }
 
         /// <summary>
         /// Called when the server is shutting down
         /// </summary>
         [HookMethod("OnServerShutdown")]
-        private void OnServerShutdown() => Interface.Oxide.OnShutdown();
+        private void OnServerShutdown()
+        {
+            // Trigger shutdown process
+            Interface.Oxide.OnShutdown();
+
+            // Save Oxide groups, users, and other data
+            Covalence.PlayerManager.SavePlayerData();
+        }
 
         #endregion Core Hooks
 
@@ -140,9 +170,13 @@ namespace Oxide.Game.SevenDays
         /// <returns></returns>
         private bool PermissionsLoaded(IPlayer player)
         {
-            if (permission.IsLoaded) return true;
-            player.Reply(string.Format(lang.GetMessage("PermissionsNotLoaded", this, player.Id), permission.LastException.Message));
-            return false;
+            if (!permission.IsLoaded)
+            {
+                player.Reply(string.Format(lang.GetMessage("PermissionsNotLoaded", this, player.Id), permission.LastException.Message));
+                return false;
+            }
+
+            return true;
         }
 
         #endregion Helpers

@@ -4,7 +4,7 @@ using System;
 using System.Globalization;
 using System.Net;
 
-namespace Oxide.Game.SevenDays.Libraries.Covalence
+namespace Oxide.Game.SevenDays
 {
     /// <summary>
     /// Represents the server hosting the game instance
@@ -18,11 +18,12 @@ namespace Oxide.Game.SevenDays.Libraries.Covalence
         /// </summary>
         public string Name
         {
-            get { return GamePrefs.GetString(EnumGamePrefs.ServerName); }
-            set { GamePrefs.Set(EnumGamePrefs.ServerName, value); }
+            get => GamePrefs.GetString(EnumGamePrefs.ServerName);
+            set => GamePrefs.Set(EnumGamePrefs.ServerName, value);
         }
 
         private static IPAddress address;
+        private static IPAddress localAddress;
 
         /// <summary>
         /// Gets the public-facing IP address of the server, if known
@@ -33,16 +34,47 @@ namespace Oxide.Game.SevenDays.Libraries.Covalence
             {
                 try
                 {
-                    if (address != null) return address;
+                    if (address == null)
+                    {
+                        string serverIp = GamePrefs.GetString(EnumGamePrefs.ServerIP);
+                        if (Utility.ValidateIPv4(serverIp) && !Utility.IsLocalIP(serverIp))
+                        {
+                            IPAddress.TryParse(serverIp, out address);
+                            Interface.Oxide.LogDebug($"IP address from command-line: {address}");
+                        }
+                        else
+                        {
+                            WebClient webClient = new WebClient();
+                            IPAddress.TryParse(webClient.DownloadString("http://api.ipify.org"), out address);
+                            Interface.Oxide.LogDebug($"IP address from external API: {address}");
+                        }
+                    }
 
-                    var webClient = new WebClient();
-                    IPAddress.TryParse(webClient.DownloadString("http://api.ipify.org"), out address);
                     return address;
                 }
                 catch (Exception ex)
                 {
-                    RemoteLogger.Exception("Couldn't get server IP address", ex);
-                    return new IPAddress(0);
+                    RemoteLogger.Exception("Couldn't get server's public IP address", ex);
+                    return IPAddress.Any;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Gets the local IP address of the server, if known
+        /// </summary>
+        public IPAddress LocalAddress
+        {
+            get
+            {
+                try
+                {
+                    return localAddress ?? (localAddress = Utility.GetLocalIP());
+                }
+                catch (Exception ex)
+                {
+                    RemoteLogger.Exception("Couldn't get server's local IP address", ex);
+                    return IPAddress.Any;
                 }
             }
         }
@@ -77,8 +109,8 @@ namespace Oxide.Game.SevenDays.Libraries.Covalence
         /// </summary>
         public int MaxPlayers
         {
-            get { return GamePrefs.GetInt(EnumGamePrefs.ServerMaxPlayerCount); }
-            set { GamePrefs.Set(EnumGamePrefs.ServerMaxPlayerCount, value); }
+            get => GamePrefs.GetInt(EnumGamePrefs.ServerMaxPlayerCount);
+            set => GamePrefs.Set(EnumGamePrefs.ServerMaxPlayerCount, value);
         }
 
         /// <summary>
@@ -88,10 +120,10 @@ namespace Oxide.Game.SevenDays.Libraries.Covalence
         {
             get
             {
-                var time = GameManager.Instance.World.worldTime;
+                ulong time = GameManager.Instance.World.worldTime;
                 return Convert.ToDateTime($"{GameUtils.WorldTimeToHours(time)}:{GameUtils.WorldTimeToMinutes(time)}");
             }
-            set { GameUtils.DayTimeToWorldTime(value.Day, value.Hour, value.Minute); }
+            set => GameUtils.DayTimeToWorldTime(value.Day, value.Hour, value.Minute);
         }
 
         /// <summary>
@@ -112,24 +144,61 @@ namespace Oxide.Game.SevenDays.Libraries.Covalence
         public void Ban(string id, string reason, TimeSpan duration = default(TimeSpan))
         {
             // Check if already banned
-            if (IsBanned(id)) return;
+            if (!IsBanned(id))
+            {
+                // Ban player with reason
+                GameManager.Instance.adminTools.AddBan(id, null, new DateTime(duration.Ticks), reason);
 
-            // Ban and kick user
-            GameManager.Instance.adminTools.AddBan(id, null, new DateTime(duration.Ticks), reason);
-            //if (IsConnected) Kick(reason); // TODO: Implement if possible
+                // Kick player if connected
+                if (IsConnected(id))
+                {
+                    Kick(id, reason);
+                }
+            }
         }
 
         /// <summary>
         /// Gets the amount of time remaining on the player's ban
         /// </summary>
         /// <param name="id"></param>
-        public TimeSpan BanTimeRemaining(string id) => GameManager.Instance.adminTools.GetAdminToolsClientInfo(id).BannedUntil.TimeOfDay;
+        public TimeSpan BanTimeRemaining(string id)
+        {
+            AdminToolsClientInfo adminClient = GameManager.Instance.adminTools.GetAdminToolsClientInfo(id);
+            return adminClient.BannedUntil.TimeOfDay;
+        }
 
         /// <summary>
         /// Gets if the player is banned
         /// </summary>
         /// <param name="id"></param>
-        public bool IsBanned(string id) => GameManager.Instance.adminTools.IsBanned(id);
+        public bool IsBanned(string id)
+        {
+            return GameManager.Instance.adminTools.IsBanned(id);
+        }
+
+        /// <summary>
+        /// Gets if the player is connected
+        /// </summary>
+        /// <param name="id"></param>
+        public bool IsConnected(string id)
+        {
+            return ConnectionManager.Instance.GetClientInfoForPlayerId(id) != null;
+        }
+
+        /// <summary>
+        /// Kicks the player for the specified reason
+        /// </summary>
+        /// <param name="id"></param>
+        /// <param name="reason"></param>
+        public void Kick(string id, string reason)
+        {
+            ClientInfo client = ConnectionManager.Instance.GetClientInfoForPlayerId(id);
+            if (client != null)
+            {
+                GameUtils.KickPlayerData kickData = new GameUtils.KickPlayerData(GameUtils.EKickReason.ManualKick, 0, DateTime.Now, reason);
+                GameUtils.KickPlayerForClientInfo(client, kickData);
+            }
+        }
 
         /// <summary>
         /// Saves the server and any related information
@@ -147,10 +216,11 @@ namespace Oxide.Game.SevenDays.Libraries.Covalence
         public void Unban(string id)
         {
             // Check if unbanned already
-            if (!IsBanned(id)) return;
-
-            // Set to unbanned
-            GameManager.Instance.adminTools.RemoveBan(id);
+            if (IsBanned(id))
+            {
+                // Set to unbanned
+                GameManager.Instance.adminTools.RemoveBan(id);
+            }
         }
 
         #endregion Administration
@@ -166,7 +236,8 @@ namespace Oxide.Game.SevenDays.Libraries.Covalence
         public void Broadcast(string message, string prefix, params object[] args)
         {
             message = args.Length > 0 ? string.Format(Formatter.ToRoKAnd7DTD(message), args) : Formatter.ToRoKAnd7DTD(message);
-            var formatted = prefix != null ? $"{prefix} {message}" : message;
+            string formatted = prefix != null ? $"{prefix} {message}" : message;
+
             GameManager.Instance.GameMessageServer(null, EnumGameMessages.Chat, formatted, null, false, null, false);
         }
 

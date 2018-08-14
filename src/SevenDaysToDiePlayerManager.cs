@@ -1,13 +1,13 @@
-﻿extern alias Oxide;
+﻿extern alias References;
 
 using Oxide.Core;
 using Oxide.Core.Libraries.Covalence;
-using Oxide::ProtoBuf;
+using References::ProtoBuf;
 using System;
 using System.Collections.Generic;
 using System.Linq;
 
-namespace Oxide.Game.SevenDays.Libraries.Covalence
+namespace Oxide.Game.SevenDays
 {
     /// <summary>
     /// Represents a generic player manager
@@ -32,12 +32,15 @@ namespace Oxide.Game.SevenDays.Libraries.Covalence
             allPlayers = new Dictionary<string, SevenDaysPlayer>();
             connectedPlayers = new Dictionary<string, SevenDaysPlayer>();
 
-            foreach (var pair in playerData) allPlayers.Add(pair.Key, new SevenDaysPlayer(pair.Value.Id, pair.Value.Name));
+            foreach (KeyValuePair<string, PlayerRecord> pair in playerData)
+            {
+                allPlayers.Add(pair.Key, new SevenDaysPlayer(pair.Value.Id, pair.Value.Name));
+            }
         }
 
         internal void PlayerJoin(ulong userId, string name)
         {
-            var id = userId.ToString();
+            string id = userId.ToString();
 
             PlayerRecord record;
             if (playerData.TryGetValue(id, out record))
@@ -53,17 +56,18 @@ namespace Oxide.Game.SevenDays.Libraries.Covalence
                 playerData.Add(id, record);
                 allPlayers.Add(id, new SevenDaysPlayer(userId, name));
             }
-
-            ProtoStorage.Save(playerData, "oxide.covalence");
         }
 
         internal void PlayerConnected(ClientInfo client)
         {
-            allPlayers[client.playerId] = new SevenDaysPlayer(client);
-            connectedPlayers[client.playerId] = new SevenDaysPlayer(client);
+            SevenDaysPlayer player = new SevenDaysPlayer(client);
+            allPlayers[client.playerId] = player;
+            connectedPlayers[client.playerId] = player;
         }
 
         internal void PlayerDisconnected(ClientInfo client) => connectedPlayers.Remove(client.playerId);
+
+        internal void SavePlayerData() => ProtoStorage.Save(playerData, "oxide.covalence");
 
         #region Player Finding
 
@@ -110,7 +114,7 @@ namespace Oxide.Game.SevenDays.Libraries.Covalence
         /// <returns></returns>
         public IPlayer FindPlayer(string partialNameOrId)
         {
-            var players = FindPlayers(partialNameOrId).ToArray();
+            IPlayer[] players = FindPlayers(partialNameOrId).ToArray();
             return players.Length == 1 ? players[0] : null;
         }
 
@@ -121,10 +125,12 @@ namespace Oxide.Game.SevenDays.Libraries.Covalence
         /// <returns></returns>
         public IEnumerable<IPlayer> FindPlayers(string partialNameOrId)
         {
-            foreach (var player in allPlayers.Values)
+            foreach (SevenDaysPlayer player in allPlayers.Values)
             {
                 if (player.Name != null && player.Name.IndexOf(partialNameOrId, StringComparison.OrdinalIgnoreCase) >= 0 || player.Id == partialNameOrId)
+                {
                     yield return player;
+                }
             }
         }
 
